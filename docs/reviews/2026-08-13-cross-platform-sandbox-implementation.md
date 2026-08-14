@@ -18,7 +18,7 @@ Status: fail-closed implementation complete for bounded delivery; promotion is b
   are validated, hashed into the policy identity, and cause a rebind when changed.
 - `@anthropic-ai/sandbox-runtime` launch adapter with filtered environment,
   project-scoped filesystem roots, deny-by-default network, and fail-closed dependency
-  preflight plus a real allow/deny filesystem fixture through the packaged runtime.
+  preflight plus native allow/deny fixtures through the runtime on supported hosts.
   Packaging unpacks the runtime CLI and generates an integrity manifest for the
   dynamically imported Prime Agent modules during build. The adapter refuses to
   claim protection until the behavioral fixture passes.
@@ -37,21 +37,25 @@ Status: fail-closed implementation complete for bounded delivery; promotion is b
 - `npm run typecheck` passed.
 - `npm run build` passed.
 - `npm run sandbox:selfcheck` passed.
-- `npm run sandbox:probes` completed with `pass=0`, `fail=0`, `unavailable=23`.
-  The command now exits non-zero unless `PRIME_DESKTOP_ALLOW_UNAVAILABLE_PROBES=1`
-  is explicitly set; this is expected on the current host because the catalog
-  backends are not registered and WSL lacks `socat` for sandbox-runtime networking.
+- `npm run sandbox:probes` completed on Ubuntu/WSL2 with `pass=16`, `fail=0`, `unavailable=7` across 23 catalog cases.
+  Native adapters cover filesystem boundaries, denied metadata, symlink escapes,
+  child/grandchild processes, environment filtering, and DNS/direct egress. The
+  seven unavailable cases are the two PTY cases, two timeout/output cases, and three
+  daemon-attach cases; PTY is intentionally not claimed as contained by the
+  current runtime wrapper, while daemon attach requires the Electron broker
+  integration harness. The command still exits non-zero unless
+  `PRIME_DESKTOP_ALLOW_UNAVAILABLE_PROBES=1` is explicitly set.
 - `git diff --check` passed.
 - Independent review confirmed the policy, transition, integrity, permission, and
-  Windows-gating fixes. No reviewer may promote the native sandbox before real-host
-  behavioral probes pass.
+  Windows-gating fixes. The latest independent review rejected shipment; no reviewer
+  may promote the native sandbox while required cases remain unavailable.
 
 ## Open promotion gates
 
 - Real macOS Seatbelt and Linux Bubblewrap/seccomp expected-allow/deny catalog
   adapters; the runtime fixture is present but does not replace the full J1 matrix.
-- Linux network isolation dependency availability (`socat` is absent on the current WSL
-  host); WSL1 remains unsupported for protected mode.
+- Linux network isolation is proven on the current WSL2 host; WSL1 remains
+  unsupported for protected mode.
 - Native Windows alpha setup and behavioral probes.
 - PTY-in-boundary decision; current PTY is visibly unsandboxed.
 - Cryptographic signing of the generated Prime Agent integrity manifest and clean-machine
