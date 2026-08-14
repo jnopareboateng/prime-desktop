@@ -180,17 +180,23 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
     if (!path) throw new Error('Project is not available')
     return path
   }
+  const requireFullTerminalAccess = async (): Promise<void> => {
+    const settings = (await getState()).settings
+    if (settings.accessMode !== 'full') {
+      throw new Error('Interactive terminal requires Full access; protected terminal containment is not available.')
+    }
+  }
   ipcMain.handle(IPC.terminalStart, (_e, agentId: string, cols?: number, rows?: number) =>
-    terminals.start(agentId, terminalPath(agentId), cols, rows))
+    requireFullTerminalAccess().then(() => terminals.start(agentId, terminalPath(agentId), cols, rows)))
   ipcMain.handle(IPC.terminalWrite, (_e, agentId: unknown, data: unknown) => {
     if (typeof agentId !== 'string' || agentId.length > 200) throw new Error('Invalid terminal agent id')
     if (typeof data !== 'string' || data.length > 64 * 1024) throw new Error('Invalid terminal input')
-    return terminals.write(agentId, data)
+    return requireFullTerminalAccess().then(() => terminals.write(agentId, data))
   })
   ipcMain.handle(IPC.terminalResize, (_e, agentId: string, cols: number, rows: number) =>
-    terminals.resize(agentId, cols, rows))
+    requireFullTerminalAccess().then(() => terminals.resize(agentId, cols, rows)))
   ipcMain.handle(IPC.terminalRestart, (_e, agentId: string, cols?: number, rows?: number) =>
-    terminals.restart(agentId, terminalPath(agentId), cols, rows))
+    requireFullTerminalAccess().then(() => terminals.restart(agentId, terminalPath(agentId), cols, rows)))
   ipcMain.handle(IPC.terminalClear, (_e, agentId: string) => terminals.clear(agentId))
   ipcMain.handle(IPC.terminalClose, (_e, agentId: string) => terminals.close(agentId))
 
@@ -323,6 +329,7 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
         }
         throw error
       }
+      if (accessModeChanged && settings.accessMode !== 'full') terminals.shutdownAll()
       for (const a of manager.allAgentInfos()) {
         const agentId = a.id
         if (p.autoCompaction !== undefined) {

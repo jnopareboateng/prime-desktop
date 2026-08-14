@@ -22,8 +22,9 @@ Status: fail-closed implementation complete for bounded delivery; promotion is b
   Packaging unpacks the runtime CLI and generates an integrity manifest for the
   dynamically imported Prime Agent modules during build. The adapter refuses to
   claim protection until the behavioral fixture passes.
-- Honest enforcement state in agent metadata and UI. The interactive PTY remains
-  explicitly unsandboxed.
+- Honest enforcement state in agent metadata and UI. The interactive PTY is
+  available only in Full access and is explicitly unsandboxed; protected modes
+  reject and close terminal sessions.
 - Installer redirects are HTTPS and host-pinned; installer execution requires a
   configured SHA-256 checksum. Checkpoints and permission storage are portable.
 - AccessPicker is authoritative for the persisted access mode; the UI reports
