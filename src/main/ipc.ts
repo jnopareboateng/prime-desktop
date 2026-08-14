@@ -1,12 +1,13 @@
-import { BrowserWindow, dialog, ipcMain, Notification, shell, app } from 'electron'
+import { BrowserWindow, dialog, ipcMain, Menu, Notification, shell, app } from 'electron'
 import { AgentManager } from './agentManager'
 import { BinaryManager } from './binary'
 import { getState, setSettings, setTabs } from './store'
-import { listRules, addRule, removeRule } from './permissions'
-import { IPC, type AgentCommand, type ProjectTab, type AutonomousConfig } from '@shared/types'
+import { listRules, addRule, removeRule, replaceRules } from './permissions'
+import { IPC, type AccessMode, type AgentCommand, type AppSettings, type MenuPopupRequest, type ProjectTab, type AutonomousConfig } from '@shared/types'
 import { basename, join } from 'path'
 import { randomUUID } from 'crypto'
 import { TerminalManager } from './terminalManager'
+import { provisionWindowsSandbox } from './sandbox/provision'
 import {
   changelogText,
   listAuthProviders,
@@ -20,6 +21,7 @@ import {
 
 export function registerIpc(win: () => BrowserWindow | null, manager: AgentManager, binary: BinaryManager): void {
   const terminals = new TerminalManager()
+  let settingsTransition: Promise<void> = Promise.resolve()
   const send = (channel: string, payload: unknown) => {
     const w = win()
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload)
@@ -66,6 +68,36 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
     return res.canceled ? null : res.filePath
   })
 
+  ipcMain.handle(IPC.menuPopup, (_e, request: MenuPopupRequest) => {
+    const w = win()
+    if (!w || w.isDestroyed()) return
+
+    const menuName = request?.menu
+    const x = Number.isFinite(request?.x) ? Math.round(request.x) : 0
+    const y = Number.isFinite(request?.y) ? Math.round(request.y) : 44
+
+    const menus: Record<string, Electron.MenuItemConstructorOptions[]> = {
+      file: [
+        { label: 'Open Folder…', accelerator: 'CmdOrCtrl+O', click: () => w.webContents.send('menu:open-folder') },
+        { type: 'separator' },
+        { role: 'close' }
+      ],
+      edit: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }
+      ],
+      view: [
+        { role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+        { type: 'separator' }, { role: 'togglefullscreen' }
+      ],
+      help: [{ role: 'about' }]
+    }
+
+    const template = menus[menuName]
+    if (template) Menu.buildFromTemplate(template).popup({ window: w, x, y })
+  })
+
   ipcMain.handle(IPC.tabsList, async () => {
     const s = await getState()
     return { tabs: s.tabs, activeTabId: s.activeTabId }
@@ -76,8 +108,19 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
     const tab: ProjectTab = { id: randomUUID(), path, name: basename(path) }
     const tabs = [...s.tabs.filter((t) => t.path !== path), tab]
     await setTabs(tabs, tab.id)
+    // Persisted state must become visible before the agent process finishes booting.
+    // Agent startup can be slow or unavailable, but the project itself is already valid.
+    send('events', { type: 'tabs_changed', payload: { tabs, activeTabId: tab.id } })
     const settings = s.settings
-    await manager.openTab(tab, settings)
+    try {
+      await manager.openTab(tab, settings)
+    } catch (error) {
+      send('toasts', {
+        id: `t${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        kind: 'error',
+        text: `Prime Agent could not start: ${error instanceof Error ? error.message : String(error)}`
+      })
+    }
     return { tab, tabs, activeTabId: tab.id }
   })
 
@@ -134,7 +177,11 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
   }
   ipcMain.handle(IPC.terminalStart, (_e, agentId: string, cols?: number, rows?: number) =>
     terminals.start(agentId, terminalPath(agentId), cols, rows))
-  ipcMain.handle(IPC.terminalWrite, (_e, agentId: string, data: string) => terminals.write(agentId, data))
+  ipcMain.handle(IPC.terminalWrite, (_e, agentId: unknown, data: unknown) => {
+    if (typeof agentId !== 'string' || agentId.length > 200) throw new Error('Invalid terminal agent id')
+    if (typeof data !== 'string' || data.length > 64 * 1024) throw new Error('Invalid terminal input')
+    return terminals.write(agentId, data)
+  })
   ipcMain.handle(IPC.terminalResize, (_e, agentId: string, cols: number, rows: number) =>
     terminals.resize(agentId, cols, rows))
   ipcMain.handle(IPC.terminalRestart, (_e, agentId: string, cols?: number, rows?: number) =>
@@ -169,10 +216,36 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
   ipcMain.handle(IPC.gitCommit, (_e, agentId: string, message: string) => manager.gitCommit(agentId, message))
 
   ipcMain.handle(IPC.permissionsList, () => listRules())
-  ipcMain.handle(IPC.permissionsSet, (_e, pattern: string, action: 'allow' | 'deny', scope: 'global' | 'project', projectPath?: string) =>
-    addRule({ pattern, action, scope, projectPath })
-  )
-  ipcMain.handle(IPC.permissionsRemove, (_e, index: number) => removeRule(index))
+  ipcMain.handle(IPC.permissionsSet, async (_e, pattern: string, action: 'allow' | 'deny', scope: 'global' | 'project', projectPath?: string) => {
+    const before = await listRules()
+    const rules = await addRule({ pattern, action, scope, projectPath })
+    const settings = (await getState()).settings
+    if (settings.accessMode === 'custom') {
+      try {
+        await manager.applyAccessMode(settings, settings)
+      } catch (error) {
+        await replaceRules([...before].reverse())
+        await manager.applyAccessMode(settings, settings).catch(() => {})
+        throw error
+      }
+    }
+    return rules
+  })
+  ipcMain.handle(IPC.permissionsRemove, async (_e, index: number) => {
+    const before = await listRules()
+    const rules = await removeRule(index)
+    const settings = (await getState()).settings
+    if (settings.accessMode === 'custom') {
+      try {
+        await manager.applyAccessMode(settings, settings)
+      } catch (error) {
+        await replaceRules([...before].reverse())
+        await manager.applyAccessMode(settings, settings).catch(() => {})
+        throw error
+      }
+    }
+    return rules
+  })
 
   ipcMain.handle(IPC.dashboardSpend, () => manager.spend())
   ipcMain.handle(IPC.dashboardModels, async () => {
@@ -203,36 +276,66 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
 
   ipcMain.handle(IPC.settingsGet, async () => (await getState()).settings)
   ipcMain.handle(IPC.settingsSet, async (_e, patch: unknown) => {
-    const s = await getState()
-    const settings = await setSettings(patch as Parameters<typeof setSettings>[0])
-    const p = patch as Record<string, unknown>
-    for (const a of manager.allAgentInfos()) {
-      const agentId = a.id
-      if (p.autoCompaction !== undefined) {
-        void manager.runCommand(agentId, { type: 'set_auto_compaction', enabled: Boolean(p.autoCompaction) }, s.settings).catch(() => {})
+    const transition = settingsTransition.then(async () => {
+      const s = await getState()
+      if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) throw new Error('Settings patch must be an object')
+      const p = patch as Record<string, unknown>
+      if (p.accessMode !== undefined && !['ask', 'approve-me', 'full', 'custom'].includes(String(p.accessMode))) {
+        throw new Error('Unknown access mode')
       }
-      if (p.autoRetry !== undefined) {
-        void manager.runCommand(agentId, { type: 'set_auto_retry', enabled: Boolean(p.autoRetry) }, s.settings).catch(() => {})
+      if (p.accessMode !== undefined && p.accessMode !== s.settings.accessMode) {
+        const mode = String(p.accessMode) as AccessMode
+        const bootstrap = await provisionWindowsSandbox(mode)
+        if (process.platform === 'win32' && mode !== 'full' && !bootstrap.ready) {
+          throw new Error(`Protected sandbox setup is not ready: ${bootstrap.error ?? 'native dependencies are unavailable'}`)
+        }
+        const candidate = { ...s.settings, ...(patch as Partial<AppSettings>) }
+        await manager.applyAccessMode(candidate, s.settings)
       }
-      if (p.thinkingLevel !== undefined) {
-        void manager.runCommand(agentId, { type: 'set_thinking_level', level: String(p.thinkingLevel) }, s.settings).catch(() => {})
+      const settings = await setSettings(patch as Partial<AppSettings>)
+      for (const a of manager.allAgentInfos()) {
+        const agentId = a.id
+        if (p.autoCompaction !== undefined) {
+          void manager.runCommand(agentId, { type: 'set_auto_compaction', enabled: Boolean(p.autoCompaction) }, settings).catch(() => {})
+        }
+        if (p.autoRetry !== undefined) {
+          void manager.runCommand(agentId, { type: 'set_auto_retry', enabled: Boolean(p.autoRetry) }, settings).catch(() => {})
+        }
+        if (p.thinkingLevel !== undefined) {
+          void manager.runCommand(agentId, { type: 'set_thinking_level', level: String(p.thinkingLevel) }, settings).catch(() => {})
+        }
+        if (p.rlmMaxDepth !== undefined) {
+          void manager.setRlmMaxDepth(agentId, Number(p.rlmMaxDepth), true).catch(() => {})
+        }
       }
-      if (p.rlmMaxDepth !== undefined) {
-        void manager.setRlmMaxDepth(agentId, Number(p.rlmMaxDepth), true).catch(() => {})
-      }
-    }
-    return settings
+      return settings
+    })
+    settingsTransition = transition.then(() => undefined, () => undefined)
+    return transition
   })
 
   ipcMain.handle(IPC.revealInFinder, (_e, path: string) => shell.showItemInFolder(path))
-  ipcMain.handle(IPC.openExternal, (_e, url: string) => shell.openExternal(url))
+  ipcMain.handle(IPC.openExternal, async (_e, url: unknown) => {
+    if (typeof url !== 'string' || url.length > 4096) throw new Error('Invalid external URL')
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      throw new Error('External URL must be absolute')
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error('Only HTTP(S) external URLs are allowed')
+    }
+    await shell.openExternal(parsed.href)
+    return true
+  })
   ipcMain.handle(IPC.quit, () => app.quit())
 
   ipcMain.handle(IPC.authList, () => listAuthProviders())
   ipcMain.handle(IPC.authSet, (_e, provider: string, key: string) => setAuthKey(provider, key))
   ipcMain.handle(IPC.authRemove, (_e, provider: string) => removeAuth(provider))
   ipcMain.handle(IPC.authOpenTui, () => {
-    openPrimeAgentLogin()
+    openPrimeAgentLogin(binary.getBinary())
     return true
   })
   ipcMain.handle(IPC.rlmGet, async (_e, agentId: string) => {

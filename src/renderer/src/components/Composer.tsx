@@ -33,8 +33,6 @@ interface Props {
   onSelectModel?: (model: string) => void
   effortLevel?: string
   onSelectEffort?: (effort: string) => void
-  accessMode?: AccessMode
-  onAccessModeChange?: (mode: AccessMode) => void
   rlmMaxDepth?: number
   onDepthChange?: (depth: number) => void
   openPicker?: 'models' | 'effort' | 'depth' | null
@@ -46,6 +44,8 @@ interface Props {
   onSelectProject?: (projectId: string) => void
   onNewProject?: () => void
   onBranchClick?: () => void
+  accessMode?: AccessMode
+  onAccessModeChange?: (mode: AccessMode) => void
 }
 
 const EFFORT_LEVELS = ['Light', 'Medium', 'High', 'Extra High', 'Max']
@@ -81,8 +81,6 @@ export default function Composer({
   onSelectModel,
   effortLevel = 'Light',
   onSelectEffort,
-  accessMode = 'ask',
-  onAccessModeChange,
   rlmMaxDepth = 1,
   onDepthChange,
   openPicker = null,
@@ -93,7 +91,9 @@ export default function Composer({
   activeProjectId,
   onSelectProject,
   onNewProject,
-  onBranchClick
+  onBranchClick,
+  accessMode = 'full',
+  onAccessModeChange
 }: Props): JSX.Element {
   const [text, setText] = useState('')
   const [images, setImages] = useState<{ type: 'image'; data: string; mimeType: string }[]>([])
@@ -240,7 +240,6 @@ export default function Composer({
   const activeModelRaw = chosenModel ?? currentModel ?? ''
   const modelShort = shortModelName(activeModelRaw)
   const pillLabel = `${modelShort} ${effortLevel}`
-
   const modelList = models.length > 0 ? models : activeModelRaw ? [{ key: activeModelRaw, provider: '', id: activeModelRaw, name: shortModelName(activeModelRaw) }] : []
   const filteredModels = modelList.filter((model) => {
     const q = modelQuery.trim().toLowerCase()
@@ -414,7 +413,6 @@ export default function Composer({
             </svg>
           </button>
 
-          {/* Access mode badge */}
           <AccessPicker mode={accessMode} onChange={onAccessModeChange ?? (() => {})} />
 
           {/* Spacer */}

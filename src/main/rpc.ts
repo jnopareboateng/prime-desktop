@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { existsSync, readFileSync, realpathSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { StringDecoder } from 'string_decoder'
 import { EventEmitter } from 'events'
 
@@ -64,8 +64,9 @@ export class RpcClient extends EventEmitter {
     const launch = launchSpec(this.binary)
     const child = spawn(launch.cmd, [...launch.args, ...this.args], {
       cwd: this.cwd,
-      env: childEnv(this.env),
-      stdio: ['pipe', 'pipe', 'pipe']
+      env: childEnv(this.env, launch.electronNode),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: process.platform === 'win32'
     })
     this.proc = child
 
@@ -211,27 +212,42 @@ function extraPath(): string {
   return ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local/bin'), join(homedir(), '.hermes/node/bin')].join(':')
 }
 
-function childEnv(overrides?: Record<string, string>): NodeJS.ProcessEnv {
+function childEnv(overrides?: Record<string, string>, electronNode = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...overrides, PI_SKIP_VERSION_CHECK: '1' }
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_NO_ASAR
+  if (electronNode) env.ELECTRON_RUN_AS_NODE = '1'
   env.PATH = `${extraPath()}:${env.PATH ?? '/usr/bin:/bin'}`
   return env
 }
 
-function findNode(): string {
+function findNode(target?: string): { command: string; electron: boolean } {
+  if (process.platform === 'win32') {
+    const candidates = [process.env.PRIME_DESKTOP_NODE_PATH]
+    if (target) {
+      let directory = dirname(target)
+      for (let i = 0; i < 6; i++) {
+        candidates.push(join(directory, 'node.exe'))
+        directory = dirname(directory)
+      }
+    }
+    candidates.push(join(dirname(process.execPath), 'node.exe'), 'node.exe')
+    const command = candidates.find((candidate) => candidate && (candidate === 'node.exe' || existsSync(candidate)))
+    if (command) return { command, electron: false }
+    return { command: process.execPath, electron: true }
+  }
   for (const candidate of [
     '/opt/homebrew/bin/node',
     '/usr/local/bin/node',
     join(homedir(), '.local/bin/node'),
     join(homedir(), '.hermes/node/bin/node')
   ]) {
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) return { command: candidate, electron: false }
   }
-  return 'node'
+  return { command: 'node', electron: false }
 }
 
-function launchSpec(binary: string): { cmd: string; args: string[] } {
+function launchSpec(binary: string): { cmd: string; args: string[]; electronNode: boolean } {
   let target = binary
   try {
     target = realpathSync(binary)
@@ -245,7 +261,16 @@ function launchSpec(binary: string): { cmd: string; args: string[] } {
     /* native binary */
   }
   if (shebang.startsWith('#!') && /node/.test(shebang)) {
-    return { cmd: findNode(), args: [target, '--mode', 'rpc'] }
+    const node = findNode(target)
+    return { cmd: node.command, args: [target, '--mode', 'rpc'], electronNode: node.electron }
   }
-  return { cmd: target, args: ['--mode', 'rpc'] }
+  if (process.platform === 'win32' && /\.js$/i.test(target)) {
+    const node = findNode(target)
+    return { cmd: node.command, args: [target, '--mode', 'rpc'], electronNode: node.electron }
+  }
+  if (process.platform === 'win32' && /\.(cmd|bat|ps1)$/i.test(target)) {
+    const command = process.env.ComSpec ?? 'cmd.exe'
+    return { cmd: command, args: ['/d', '/s', '/c', `"${target}" --mode rpc`], electronNode: false }
+  }
+  return { cmd: target, args: ['--mode', 'rpc'], electronNode: false }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Checkpoint, FileDiff, PermissionRule } from '@shared/types'
+import type { Checkpoint, FileDiff } from '@shared/types'
 
 interface Props {
   activeAgentId: string | null
@@ -8,7 +8,6 @@ interface Props {
 export default function ApprovalView({ activeAgentId }: Props): JSX.Element {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [diffs, setDiffs] = useState<FileDiff[]>([])
-  const [perms, setPerms] = useState<PermissionRule[]>([])
   const [selected, setSelected] = useState<FileDiff | null>(null)
   const [restoring, setRestoring] = useState<string | null>(null)
 
@@ -19,7 +18,6 @@ export default function ApprovalView({ activeAgentId }: Props): JSX.Element {
       setDiffs(d)
       setSelected((s) => s ?? d[0] ?? null)
     })
-    void window.prime.permissionsList().then(setPerms)
   }, [activeAgentId])
 
   useEffect(() => {
@@ -114,51 +112,6 @@ export default function ApprovalView({ activeAgentId }: Props): JSX.Element {
         </div>
       </div>
 
-      <section className="panel">
-        <div className="panel-head">Permission rules</div>
-        <div className="row-gap">
-          <input id="perm-pattern" className="field" placeholder="command pattern, e.g. rm -rf or *" />
-          <select id="perm-action" className="field">
-            <option value="deny">deny</option>
-            <option value="allow">allow</option>
-          </select>
-          <select id="perm-scope" className="field">
-            <option value="global">global</option>
-            <option value="project">this project</option>
-          </select>
-          <button
-            className="btn primary small"
-            onClick={() => {
-              const pattern = (document.getElementById('perm-pattern') as HTMLInputElement).value.trim()
-              if (!pattern) return
-              const action = (document.getElementById('perm-action') as HTMLSelectElement).value as 'allow' | 'deny'
-              const scope = (document.getElementById('perm-scope') as HTMLSelectElement).value as 'global' | 'project'
-              void window.prime.permissionsSet(pattern, action, scope, scope === 'project' ? activeAgentId : undefined).then(() =>
-                void window.prime.permissionsList().then(setPerms)
-              )
-              ;(document.getElementById('perm-pattern') as HTMLInputElement).value = ''
-            }}
-          >
-            Add rule
-          </button>
-        </div>
-        {perms.length === 0 && <div className="cmd-empty">No rules — all commands are asked before running (via extension dialogs).</div>}
-        {perms.map((p, i) => (
-          <div key={i} className="perm-row">
-            <code>{p.pattern}</code>
-            <span className={`perm-action ${p.action}`}>{p.action}</span>
-            <span className="perm-scope">{p.scope}{p.scope === 'project' ? ' · ' + (p.projectPath ?? '') : ''}</span>
-            <button
-              className="btn ghost small"
-              onClick={() => {
-                void window.prime.permissionsRemove(i).then(() => void window.prime.permissionsList().then(setPerms))
-              }}
-            >
-              remove
-            </button>
-          </div>
-        ))}
-      </section>
     </div>
   )
 }

@@ -13,8 +13,7 @@ import SettingsView from './views/SettingsView'
 import Toasts from './components/Toasts'
 import DialogHost from './components/DialogHost'
 import WelcomeScreen from './components/WelcomeScreen'
-import type { PrimeEvent, Toast } from '@shared/types'
-import type { AccessMode } from './components/AccessPicker'
+import type { AccessMode, PrimeEvent, Toast } from '@shared/types'
 import { applyAppTheme } from './lib/theme'
 
 export default function App(): JSX.Element {
@@ -26,7 +25,6 @@ export default function App(): JSX.Element {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('subagents')
   const [selectedFleetEntry, setSelectedFleetEntry] = useState<FleetEntry | null>(null)
-  const [accessMode, setAccessMode] = useState<AccessMode>('ask')
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -103,6 +101,16 @@ export default function App(): JSX.Element {
     const { agentId, type, payload } = e
 
     switch (type) {
+      case 'tabs_changed': {
+        const next = payload as { tabs?: AppState['tabs']; activeTabId?: string | null }
+        if (!Array.isArray(next.tabs)) return
+        mutate((s) => ({
+          ...s,
+          tabs: next.tabs!,
+          activeTabId: next.activeTabId ?? s.activeTabId
+        }))
+        return
+      }
       case 'binary_state': {
         mutate((s) => ({ ...s, binary: payload as never }))
         return
@@ -323,11 +331,16 @@ export default function App(): JSX.Element {
 
   return (
     <div className="app">
+      <TabBar
+        inspectorOpen={sidePanelOpen}
+        onToggleInspector={() => setSidePanelOpen((open) => !open)}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+      />
       <Sidebar
         state={state}
         activeAgentId={activeAgentId}
         collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((v) => !v)}
         onView={(v) => mutate((s) => ({ ...s, view: v }))}
         onNewChat={() => {
           mutate((s) => ({ ...s, view: 'chat' }))
@@ -347,20 +360,6 @@ export default function App(): JSX.Element {
         onOpenFolder={() => void openFolder()}
       />
       <div className="app-main">
-        <TabBar
-          inspectorOpen={sidePanelOpen}
-          onToggleInspector={() => setSidePanelOpen((open) => !open)}
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-          onNewChat={() => {
-            mutate((s) => ({ ...s, view: 'chat' }))
-            if (activeAgentId) {
-              void window.prime.agentCommand(activeAgentId, { type: 'new_session' } as never)
-            }
-          }}
-          onOpenProject={() => void openFolder()}
-          projectName={activeTab?.name}
-        />
         <div className="app-body">
           {noTabs ? (
             <WelcomeScreen onOpen={() => void openFolder()} binary={state.binary} onInstall={() => void window.prime.binaryInstall()} />
@@ -373,8 +372,20 @@ export default function App(): JSX.Element {
                     info={activeInfo}
                     tab={activeTab}
                     projects={state.tabs}
-                    accessMode={accessMode}
-                    onAccessModeChange={setAccessMode}
+                    accessMode={state.settings.accessMode}
+                    onAccessModeChange={(mode: AccessMode) => {
+                      const previous = stateRef.current.settings.accessMode
+                      mutate((s) => ({ ...s, settings: { ...s.settings, accessMode: mode } }))
+                      void window.prime.settingsSet({ accessMode: mode }).catch((error) => {
+                        mutate((s) => ({ ...s, settings: { ...s.settings, accessMode: previous } }))
+                        const toast = {
+                          id: `access-${Date.now()}`,
+                          kind: 'error' as const,
+                          text: `Access mode was not applied: ${error instanceof Error ? error.message : String(error)}`
+                        }
+                        mutate((s) => ({ ...s, toasts: [...s.toasts.slice(-4), toast] }))
+                      })
+                    }}
                     rlmMaxDepth={state.settings.rlmMaxDepth ?? 1}
                     onDepthChange={(depth) => {
                       mutate((s) => ({ ...s, settings: { ...s.settings, rlmMaxDepth: depth } }))

@@ -6,6 +6,8 @@ import { registerIpc } from './ipc'
 import { getState } from './store'
 import type { AppSettings } from '@shared/types'
 import { resolveThemeMode } from '@shared/themes'
+import { provisionWindowsSandbox } from './sandbox/provision'
+import { ensureWindowsKernelRuntime } from './kernelCompat'
 
 let mainWindow: BrowserWindow | null = null
 let manager: AgentManager | null = null
@@ -19,15 +21,44 @@ function createWindow(settings: AppSettings): void {
     minWidth: 980,
     minHeight: 640,
     title: 'Prime',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 18 },
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 16, y: 18 }
+        }
+      : {
+          // The renderer owns the Codex-style chrome on Windows/Linux. Keep
+          // the native window buttons overlaid without adding a title band.
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            color: windowTheme.surface,
+            symbolColor: windowTheme.ink,
+            height: 44
+          }
+        }),
     backgroundColor: windowTheme.surface,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
+      preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true,
+      webSecurity: true
     }
+  })
+
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    let allowed = false
+    try {
+      const target = new URL(url)
+      const devUrl = process.env['ELECTRON_RENDERER_URL']
+      allowed = devUrl
+        ? target.origin === new URL(devUrl).origin
+        : target.protocol === 'file:'
+    } catch {
+      allowed = false
+    }
+    if (!allowed) event.preventDefault()
   })
 
   mainWindow.on('closed', () => {
@@ -92,7 +123,11 @@ function buildMenu(): void {
       submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }]
     }
   ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  // The renderer owns the Codex-style chrome on every platform. Keeping an
+  // additional native application menu would create a second menu surface on
+  // macOS and reintroduce the titlebar/menu duplication this shell avoids.
+  void template
+  Menu.setApplicationMenu(null)
 }
 
 app.whenReady().then(async () => {
@@ -104,8 +139,27 @@ app.whenReady().then(async () => {
 
   const state = await getState()
   await binary.check()
-
   createWindow(state.settings)
+
+  // Provisioning is gated by the selected access mode. Full access must never
+  // trigger UAC or sandbox setup, while protected sessions must not race their
+  // first daemon against the runtime installer.
+  const kernelReady = ensureWindowsKernelRuntime(binary.getBinary())
+    .then((kernelPython) => {
+      if (kernelPython) process.env.PRIME_AGENT_KERNEL_PYTHON = kernelPython
+    })
+    .catch((error) => {
+      console.warn('[prime-desktop] Windows kernel runtime setup deferred:', error instanceof Error ? error.message : String(error))
+    })
+  const sandboxReady = provisionWindowsSandbox(state.settings.accessMode)
+
+  const [_, sandbox] = await Promise.all([kernelReady, sandboxReady])
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (sandbox.attempted) {
+    mainWindow.webContents.send('toasts', sandbox.ready
+      ? { id: `sandbox-${Date.now()}`, kind: 'info', text: 'Windows sandbox dependencies are ready; enforcement will be verified before protected agent start.' }
+      : { id: `sandbox-${Date.now()}`, kind: 'error', text: `Protected sandbox setup needs attention: ${sandbox.error ?? 'unavailable'}` })
+  }
 
   for (const tab of state.tabs) {
     try {

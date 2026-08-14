@@ -1,9 +1,13 @@
 import { EventEmitter } from 'events'
-import { spawn } from 'child_process'
-import { realpathSync } from 'fs'
-import { dirname, join } from 'path'
+import { spawn, type ChildProcess } from 'child_process'
+import { createHash } from 'crypto'
+import { existsSync, readFileSync, realpathSync } from 'fs'
+import { rm } from 'fs/promises'
+import { dirname, join, sep } from 'path'
 import { pathToFileURL } from 'url'
 import type { AppSettings } from '@shared/types'
+import { prepareSandboxedDaemonLaunch } from './sandbox/runtime'
+import type { BackendCapability } from './sandbox/types'
 
 export interface DaemonConnection {
   subscribe(listener: (event: Record<string, unknown>) => void): () => void
@@ -88,7 +92,7 @@ interface Options {
   settings: AppSettings
 }
 
-let modulesPromise: Promise<DaemonModules> | null = null
+const modulePromises = new Map<string, Promise<DaemonModules>>()
 
 function packageRoot(binary: string): string {
   const resolved = realpathSync(binary)
@@ -97,61 +101,160 @@ function packageRoot(binary: string): string {
   throw new Error('Resident transport requires the npm installation of prime-agent.')
 }
 
-async function loadModules(binary: string): Promise<DaemonModules> {
-  if (!modulesPromise) {
-    modulesPromise = (async () => {
-      const root = packageRoot(binary)
+const DAEMON_MODULES = [
+  'dist/modes/daemon/daemon-client.js',
+  'dist/modes/agent-connection/daemon-agent-connection.js'
+] as const
+
+function verifiedModulePath(root: string, relativePath: string): string {
+  const rootPath = realpathSync(root)
+  const modulePath = realpathSync(join(rootPath, relativePath))
+  if (modulePath !== rootPath && !modulePath.startsWith(`${rootPath}${sep}`)) {
+    throw new Error(`Prime Agent module escaped its package root: ${relativePath}`)
+  }
+  return modulePath
+}
+
+function verifyModuleIntegrity(root: string, protectedMode: boolean): string[] {
+  const paths = DAEMON_MODULES.map((relativePath) => verifiedModulePath(root, relativePath))
+  const manifestPath = process.env.PRIME_AGENT_MODULE_MANIFEST || join(root, 'prime-desktop-integrity.json')
+  if (!existsSync(manifestPath)) {
+    if (protectedMode) {
+      throw new Error('Protected Prime Agent sessions require PRIME_AGENT_MODULE_MANIFEST.')
+    }
+    console.warn('[prime-desktop] Prime Agent module integrity manifest is not configured; dynamic modules remain unverified.')
+    return paths
+  }
+
+  let manifest: unknown
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  } catch (error) {
+    throw new Error(`Prime Agent module integrity manifest could not be read: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const entries = manifest && typeof manifest === 'object' && 'files' in manifest
+    ? (manifest as { files?: unknown }).files
+    : manifest
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+    throw new Error('Prime Agent module integrity manifest must be an object of relative paths to SHA-256 hashes.')
+  }
+
+  for (const [index, relativePath] of DAEMON_MODULES.entries()) {
+    const expected = (entries as Record<string, unknown>)[relativePath]
+    if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/i.test(expected)) {
+      throw new Error(`Prime Agent module integrity is missing a SHA-256 entry for ${relativePath}.`)
+    }
+    const actual = createHash('sha256').update(readFileSync(paths[index])).digest('hex')
+    if (actual !== expected.toLowerCase()) {
+      throw new Error(`Prime Agent module integrity check failed for ${relativePath}.`)
+    }
+  }
+  return paths
+}
+
+async function loadModules(binary: string, protectedMode: boolean): Promise<DaemonModules> {
+  const root = packageRoot(binary)
+  // Re-verify on every protected start, even when the module import is cached
+  // from a prior Full access session.
+  const modulePaths = verifyModuleIntegrity(root, protectedMode)
+  const integrityKey = protectedMode
+    ? createHash('sha256').update(modulePaths.map((path) => readFileSync(path)).join('|')).digest('hex')
+    : 'full'
+  const cacheKey = `${root}:${integrityKey}`
+  const existing = modulePromises.get(cacheKey)
+  if (existing) return existing
+  const promise = (async () => {
+      const [daemonClientPath, connectionPath] = modulePaths
+      const suffix = protectedMode ? `?primeIntegrity=${integrityKey}` : ''
       const [daemon, connection] = await Promise.all([
-        import(pathToFileURL(join(root, 'dist', 'modes', 'daemon', 'daemon-client.js')).href),
-        import(pathToFileURL(join(root, 'dist', 'modes', 'agent-connection', 'daemon-agent-connection.js')).href)
+        import(`${pathToFileURL(daemonClientPath).href}${suffix}`),
+        import(`${pathToFileURL(connectionPath).href}${suffix}`)
       ])
       return {
         DaemonClient: daemon.DaemonClient,
         DaemonAgentConnection: connection.DaemonAgentConnection
       } as DaemonModules
     })()
-  }
-  return modulesPromise
+  modulePromises.set(cacheKey, promise)
+  return promise
 }
 
-function childEnv(): NodeJS.ProcessEnv {
+function childEnv(electronNode = false): NodeJS.ProcessEnv {
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_NO_ASAR
+  if (electronNode) env.ELECTRON_RUN_AS_NODE = '1'
   return env
+}
+
+function nodeForScript(script: string): string {
+  if (process.env.PRIME_DESKTOP_NODE_PATH) return process.env.PRIME_DESKTOP_NODE_PATH
+  let directory = dirname(script)
+  for (let i = 0; i < 6; i++) {
+    const candidate = join(directory, process.platform === 'win32' ? 'node.exe' : 'node')
+    if (existsSync(candidate)) return candidate
+    directory = dirname(directory)
+  }
+  return process.platform === 'win32' ? process.execPath : 'node'
+}
+
+function isNamedPipe(path: string): boolean {
+  return process.platform === 'win32' && path.startsWith('\\\\.\\pipe\\')
 }
 
 async function connectWithStartup(
   Client: DaemonModules['DaemonClient'],
   binary: string,
-  socketPath: string
-): Promise<DaemonClientLike> {
+  socketPath: string,
+  cwd: string,
+  accessMode: AppSettings['accessMode']
+): Promise<{ client: DaemonClientLike; process: ChildProcess; capability: BackendCapability; cleanup: () => Promise<void> }> {
+  const launch = await prepareSandboxedDaemonLaunch(binary, socketPath, cwd, accessMode)
+  const cleanup = async (): Promise<void> => {
+    await launch.cleanup()
+    if (!isNamedPipe(socketPath)) await rm(socketPath, { force: true })
+  }
   const first = new Client(socketPath)
   try {
     await first.connect(1_500)
-    return first
-  } catch {
+    // Callers use a fresh per-session socket. An existing listener here is
+    // therefore unexpected and must not be silently adopted.
     first.close()
+    throw new Error('Refusing to attach to an unverified Prime Agent daemon.')
+  } catch (error) {
+    first.close()
+    if (error instanceof Error && error.message.startsWith('Refusing to attach')) throw error
   }
 
-  const daemon = spawn(binary, ['--mode', 'daemon', '--daemon-socket', socketPath], {
-    detached: true,
-    env: childEnv(),
-    stdio: 'ignore'
+  const daemonArgs = launch.args.length > 0 ? [...launch.args] : ['--mode', 'daemon', '--daemon-socket', socketPath]
+  let daemonCommand = launch.command || binary
+  let useElectronNode = false
+  if (!launch.command && process.platform === 'win32' && /\.js$/i.test(binary)) {
+    daemonCommand = nodeForScript(binary)
+    useElectronNode = daemonCommand === process.execPath && !/node\.exe$/i.test(daemonCommand)
+    daemonArgs.unshift(binary)
+  }
+  const daemon = spawn(daemonCommand, daemonArgs, {
+    detached: false,
+    env: launch.command ? launch.env : childEnv(useElectronNode),
+    stdio: 'ignore',
+    windowsHide: process.platform === 'win32'
   })
-  daemon.unref()
+  daemon.on('error', () => {})
+  daemon.once('exit', () => { void cleanup() })
   let lastError: unknown
   for (let attempt = 0; attempt < 30; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 100))
     const client = new Client(socketPath)
     try {
       await client.connect(500)
-      return client
+      return { client, process: daemon, capability: launch.capability, cleanup }
     } catch (error) {
       lastError = error
       client.close()
     }
   }
+  await cleanup()
   throw lastError instanceof Error ? lastError : new Error('Prime Agent daemon did not start.')
 }
 
@@ -167,6 +270,9 @@ export class DaemonTransport extends EventEmitter {
   private exitHandlers = new Set<() => void>()
   private started = false
   private disposed = false
+  private daemonProcess: ChildProcess | null = null
+  private launchCleanup: (() => Promise<void>) | null = null
+  private capability: BackendCapability | null = null
 
   constructor(private readonly options: Options) {
     super()
@@ -176,14 +282,28 @@ export class DaemonTransport extends EventEmitter {
     return this.started && !this.disposed && this.connection !== null
   }
 
+  get enforcement(): BackendCapability | null {
+    return this.capability
+  }
+
   onExit(fn: () => void): void {
     this.exitHandlers.add(fn)
   }
 
   async start(): Promise<void> {
     if (this.started) return
-    const { DaemonClient, DaemonAgentConnection } = await loadModules(this.options.binary)
-    const client = await connectWithStartup(DaemonClient, this.options.binary, this.options.socketPath)
+    const { DaemonClient, DaemonAgentConnection } = await loadModules(this.options.binary, this.options.settings.accessMode !== 'full')
+    const started = await connectWithStartup(
+      DaemonClient,
+      this.options.binary,
+      this.options.socketPath,
+      this.options.cwd,
+      this.options.settings.accessMode
+    )
+    const client = started.client
+    this.daemonProcess = started.process
+    this.capability = started.capability
+    this.launchCleanup = started.cleanup
     this.client = client
     try {
       const model = this.options.settings.model
@@ -209,7 +329,9 @@ export class DaemonTransport extends EventEmitter {
       const connection = await DaemonAgentConnection.attach(client, activeSessionId, {
         closeClientOnDispose: true,
         supportsExtensionUi: true,
-        sendClientEnv: true
+        // The daemon already receives a deliberately filtered environment.
+        // Never copy the Electron main-process environment into the agent.
+        sendClientEnv: false
       })
       this.connection = connection
       this.unsubscribe = connection.subscribe((event) => {
@@ -234,6 +356,10 @@ export class DaemonTransport extends EventEmitter {
       await connection.setRlmMaxDepth(this.options.settings.rlmMaxDepth, { global: false })
     } catch (error) {
       client.close()
+      this.daemonProcess?.kill()
+      this.daemonProcess = null
+      await this.launchCleanup?.()
+      this.launchCleanup = null
       this.client = null
       throw error
     }
@@ -396,6 +522,10 @@ export class DaemonTransport extends EventEmitter {
     void this.dispose()
   }
 
+  async shutdown(): Promise<void> {
+    await this.dispose()
+  }
+
   kill(): void {
     void this.dispose()
   }
@@ -411,6 +541,34 @@ export class DaemonTransport extends EventEmitter {
       this.connection = null
       this.client?.close()
       this.client = null
+      const daemon = this.daemonProcess
+      this.daemonProcess = null
+      if (daemon && daemon.exitCode === null) {
+        const waitForExit = (timeoutMs: number) => new Promise<boolean>((resolve) => {
+          if (daemon.exitCode !== null) return resolve(true)
+          let settled = false
+          const finish = (exited: boolean) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            daemon.removeListener('exit', onExit)
+            resolve(exited)
+          }
+          const timer = setTimeout(() => finish(false), timeoutMs)
+          const onExit = () => finish(true)
+          daemon.once('exit', onExit)
+        })
+        daemon.kill()
+        let exited = await waitForExit(5_000)
+        if (!exited) {
+          daemon.kill()
+          exited = await waitForExit(2_000)
+        }
+        if (!exited) throw new Error('Prime Agent daemon did not terminate before the replacement transition.')
+      }
+      await this.launchCleanup?.()
+      this.launchCleanup = null
+      this.capability = null
       for (const fn of this.exitHandlers) fn()
     }
   }

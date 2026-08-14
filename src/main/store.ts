@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
+import { app } from 'electron'
 import { existsSync } from 'fs'
 import type { AppSettings, ProjectTab } from '@shared/types'
 import { CODEX_DARK_THEME, PRIME_LIGHT_THEME } from '@shared/themes'
@@ -12,7 +13,11 @@ export interface StoredState {
   model: string | null
 }
 
-const STATE_FILE = join(homedir(), 'Library', 'Application Support', 'PrimeDesktop', 'state.json')
+function stateFile(): string {
+  return join(app.getPath('userData'), 'state.json')
+}
+
+const LEGACY_WINDOWS_STATE_FILE = join(homedir(), 'Library', 'Application Support', 'PrimeDesktop', 'state.json')
 
 const DEFAULTS: AppSettings = {
   notifications: true,
@@ -23,6 +28,7 @@ const DEFAULTS: AppSettings = {
   autoRetry: true,
   model: null,
   rlmMaxDepth: 1,
+  accessMode: 'full',
   themeMode: 'system',
   codeThemeId: 'codex',
   lightTheme: PRIME_LIGHT_THEME,
@@ -34,8 +40,13 @@ let cache: StoredState | null = null
 async function load(): Promise<StoredState> {
   if (cache) return cache
   try {
-    if (existsSync(STATE_FILE)) {
-      const raw = JSON.parse(await readFile(STATE_FILE, 'utf8')) as Partial<StoredState>
+    const file = existsSync(stateFile())
+      ? stateFile()
+      : process.platform === 'win32' && existsSync(LEGACY_WINDOWS_STATE_FILE)
+        ? LEGACY_WINDOWS_STATE_FILE
+        : stateFile()
+    if (existsSync(file)) {
+      const raw = JSON.parse(await readFile(file, 'utf8')) as Partial<StoredState>
       cache = {
         settings: { ...DEFAULTS, ...(raw.settings ?? {}) },
         tabs: raw.tabs ?? [],
@@ -53,8 +64,9 @@ async function load(): Promise<StoredState> {
 
 async function save(): Promise<void> {
   if (!cache) return
-  await mkdir(join(STATE_FILE, '..'), { recursive: true })
-  await writeFile(STATE_FILE, JSON.stringify(cache, null, 2))
+  const file = stateFile()
+  await mkdir(join(file, '..'), { recursive: true })
+  await writeFile(file, JSON.stringify(cache, null, 2))
 }
 
 export async function getState(): Promise<StoredState> {

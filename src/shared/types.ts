@@ -6,6 +6,12 @@ export interface ProjectTab {
   name: string
 }
 
+export interface MenuPopupRequest {
+  menu: 'file' | 'edit' | 'view' | 'help'
+  x: number
+  y: number
+}
+
 export interface BinaryState {
   status: 'checking' | 'found' | 'installing' | 'installed' | 'error'
   path: string | null
@@ -19,6 +25,7 @@ export interface AgentInfo {
   name: string
   path: string
   status: 'starting' | 'idle' | 'working' | 'error' | 'stopped'
+  enforcement: 'enforced' | 'unenforced' | 'unavailable'
   model: string | null
   thinkingLevel: string | null
   messageCount: number
@@ -194,6 +201,8 @@ export interface Toast {
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
+export type AccessMode = 'ask' | 'approve-me' | 'full' | 'custom'
+
 export interface ThemeConfig {
   accent: string
   contrast: number
@@ -220,6 +229,7 @@ export interface AppSettings {
   autoRetry: boolean
   model: string | null
   rlmMaxDepth: number
+  accessMode: AccessMode
   themeMode: ThemeMode
   codeThemeId: string
   lightTheme: ThemeConfig
@@ -284,7 +294,6 @@ export const IPC = {
   permissionsList: 'permissions:list',
   permissionsSet: 'permissions:set',
   permissionsRemove: 'permissions:remove',
-  permissionsMatch: 'permissions:match',
   dashboardSpend: 'dashboard:spend',
   dashboardModels: 'dashboard:models',
   autonomyGet: 'autonomy:get',
@@ -313,6 +322,7 @@ export const IPC = {
   shareSession: 'session:share',
   changelog: 'app:changelog',
   logsReveal: 'app:logs',
+  menuPopup: 'menu:popup',
   windowFullscreen: 'window:fullscreen',
   agentHarness: 'agent:harness'
 } as const

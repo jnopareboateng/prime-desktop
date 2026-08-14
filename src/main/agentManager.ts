@@ -1,10 +1,12 @@
 import { EventEmitter } from 'events'
 import { existsSync, readdirSync } from 'fs'
-import { readFile, writeFile, mkdir, stat, readdir } from 'fs/promises'
+import { readFile, writeFile, mkdir, chmod, stat, readdir } from 'fs/promises'
 import { homedir } from 'os'
 import { join, basename, resolve } from 'path'
+import { randomUUID } from 'crypto'
 import { RpcClient } from './rpc'
 import { DaemonTransport, type DaemonTreeNode } from './daemonTransport'
+import { assertSandboxedDaemonAvailable } from './sandbox/runtime'
 import { BinaryManager } from './binary'
 import {
   commitAll,
@@ -47,9 +49,12 @@ import type {
 } from '@shared/types'
 
 const SESSION_DIR = join(homedir(), '.prime', 'agent', 'sessions')
-const CHECKPOINT_DIR = join(homedir(), 'Library', 'Application Support', 'PrimeDesktop', 'checkpoints')
-const APP_SUPPORT_DIR = join(homedir(), 'Library', 'Application Support', 'PrimeDesktop')
-const APP_DAEMON_SOCKET = join(APP_SUPPORT_DIR, 'prime-agent.sock')
+const APP_SUPPORT_DIR = process.platform === 'win32'
+  ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'PrimeDesktop')
+  : process.platform === 'darwin'
+    ? join(homedir(), 'Library', 'Application Support', 'PrimeDesktop')
+    : join(homedir(), '.local', 'share', 'PrimeDesktop')
+const CHECKPOINT_DIR = join(APP_SUPPORT_DIR, 'checkpoints')
 const MODELS_FILE = join(homedir(), '.prime', 'agent', 'models.json')
 
 interface Agent {
@@ -74,6 +79,7 @@ export class AgentManager extends EventEmitter {
   private agents = new Map<string, Agent>()
   private observers = new Map<string, RpcClient>()
   private binary: BinaryManager
+  private accessModeTransition: Promise<void> = Promise.resolve()
 
   constructor(binary: BinaryManager) {
     super()
@@ -82,6 +88,13 @@ export class AgentManager extends EventEmitter {
 
   private emitToRenderer(channel: 'events' | 'toasts', payload: unknown): void {
     this.emit('renderer', { channel, payload })
+  }
+
+  private async requireFullAccess(operation: string): Promise<void> {
+    const settings = (await getState()).settings
+    if (settings.accessMode !== 'full') {
+      throw new Error(`${operation} is an administrative host operation and is available only in Full access mode.`)
+    }
   }
 
   // ---------- Lifecycle ----------
@@ -104,6 +117,7 @@ export class AgentManager extends EventEmitter {
         name: basename(tab.path),
         path: tab.path,
         status: 'starting',
+        enforcement: 'unenforced',
         model: null,
         thinkingLevel: null,
         messageCount: 0,
@@ -135,10 +149,19 @@ export class AgentManager extends EventEmitter {
 
   private async connect(agent: Agent, settings: AppSettings): Promise<void> {
     const binary = this.binary.getBinary()
-    await mkdir(APP_SUPPORT_DIR, { recursive: true })
+    const socketDir = join(APP_SUPPORT_DIR, 'sockets')
+    if (process.platform !== 'win32') {
+      await mkdir(socketDir, { recursive: true, mode: 0o700 })
+      await chmod(socketDir, 0o700).catch(() => {})
+    }
+    const socketPath = process.platform === 'win32'
+      ? `\\\\.\\pipe\\prime-desktop-${randomUUID()}`
+      : join(socketDir, `${randomUUID()}.sock`)
     const client = new DaemonTransport({
       binary,
-      socketPath: APP_DAEMON_SOCKET,
+      // A fresh per-session socket prevents adoption of a resident daemon
+      // left by another app launch or an unrelated prime-agent process.
+      socketPath,
       cwd: agent.path,
       settings
     })
@@ -159,9 +182,18 @@ export class AgentManager extends EventEmitter {
       this.publish(agent)
     })
 
-    await client.start()
+    try {
+      await client.start()
+    } catch (error) {
+      agent.client = null
+      agent.info.status = 'error'
+      agent.info.enforcement = settings.accessMode === 'full' ? 'unenforced' : 'unavailable'
+      this.publish(agent)
+      throw error
+    }
 
     agent.info.status = 'idle'
+    agent.info.enforcement = client.enforcement?.state ?? 'unenforced'
     agent.info.thinkingLevel = settings.thinkingLevel
     this.publish(agent)
 
@@ -212,6 +244,56 @@ export class AgentManager extends EventEmitter {
       agent.messages = this.visibleMessages((msgs as { messages: unknown[] }).messages ?? [])
       this.syncStatsFromMessages(agent)
       this.publish(agent)
+    }
+  }
+
+  async applyAccessMode(settings: AppSettings, previousSettings: AppSettings = settings): Promise<void> {
+    const transition = this.accessModeTransition.then(() => this.applyAccessModeSerial(settings, previousSettings))
+    this.accessModeTransition = transition.catch(() => {})
+    return transition
+  }
+
+  private async applyAccessModeSerial(settings: AppSettings, previousSettings: AppSettings): Promise<void> {
+    const agents = [...this.agents.values()]
+    if (agents.length === 0) {
+      await assertSandboxedDaemonAvailable(this.binary.getBinary(), process.cwd(), settings.accessMode)
+    } else {
+      for (const agent of agents) {
+        await assertSandboxedDaemonAvailable(this.binary.getBinary(), agent.path, settings.accessMode)
+      }
+    }
+
+    try {
+      for (const agent of agents) {
+        // Invalidate listeners from the previous daemon before replacing it.
+        // The old process is fully stopped before the new policy starts.
+        agent.starts++
+        const oldClient = agent.client
+        agent.client = null
+        await oldClient?.shutdown()
+        agent.info.status = 'starting'
+        agent.info.enforcement = settings.accessMode === 'full' ? 'unenforced' : 'unavailable'
+        this.publish(agent)
+        await this.connect(agent, settings)
+      }
+    } catch (error) {
+      // A failed transition must not leave the user with a dead agent and a
+      // persisted policy that was never applied. Rebind every agent to the
+      // previous policy before reporting the failure to IPC.
+      for (const agent of agents) {
+        agent.starts++
+        await agent.client?.shutdown().catch(() => {})
+        agent.client = null
+        try {
+          await this.connect(agent, previousSettings)
+        } catch (rollbackError) {
+          agent.info.status = 'error'
+          agent.info.enforcement = previousSettings.accessMode === 'full' ? 'unenforced' : 'unavailable'
+          this.publish(agent)
+          this.toast(agent, 'error', `Access policy rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
+        }
+      }
+      throw error
     }
   }
 
@@ -933,6 +1015,7 @@ export class AgentManager extends EventEmitter {
   }
 
   async installSkillPackage(source: string): Promise<{ ok: boolean; error?: string }> {
+    await this.requireFullAccess('Skill installation')
     const agent = [...this.agents.values()][0]
     const binary = this.binary.getBinary()
     const cwd = agent?.path ?? homedir()
@@ -993,6 +1076,7 @@ export class AgentManager extends EventEmitter {
       return { enabled: await getAgentTracesEnabled() }
     }
     if (action === 'update') {
+      await this.requireFullAccess('Prime Agent updates')
       const { execFile } = await import('child_process')
       const { promisify } = await import('util')
       const result = await promisify(execFile)(this.binary.getBinary(), ['update'], {
@@ -1070,6 +1154,7 @@ export class AgentManager extends EventEmitter {
   }
 
   async shareSession(agentId: string): Promise<{ previewUrl: string; gistUrl: string }> {
+    await this.requireFullAccess('Session sharing')
     const { tmpdir } = await import('os')
     const tmpFile = join(tmpdir(), `prime-session-${Date.now()}.html`)
     await this.exportHtml(agentId, tmpFile)

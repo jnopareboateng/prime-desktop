@@ -95,6 +95,7 @@ export const initialState: AppState = {
     autoRetry: true,
     model: null,
     rlmMaxDepth: 1,
+    accessMode: 'full',
     themeMode: 'system',
     codeThemeId: 'codex',
     lightTheme: PRIME_LIGHT_THEME,

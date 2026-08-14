@@ -9,6 +9,7 @@ interface Snapshot {
   buffer: string
   cwd: string
   offset: number
+  enforcement: 'unenforced'
 }
 
 interface DataEvent {
@@ -182,7 +183,7 @@ export default function TerminalPanel({ agentId }: { agentId: string | null }): 
   return (
     <div className="terminal-panel">
       <div className="terminal-toolbar">
-        <span className={`terminal-status ${status}`}>{status === 'ready' ? 'Shell' : status}</span>
+        <span className={`terminal-status ${status}`}>{status === 'ready' ? 'Shell · unsandboxed' : status}</span>
         <div className="terminal-toolbar-actions">
           <button onClick={clear}>Clear</button>
           <button onClick={restart}>Restart</button>

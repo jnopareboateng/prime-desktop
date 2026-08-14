@@ -62,12 +62,35 @@ export async function removeAuth(provider: string): Promise<void> {
   await writeFile(AUTH_PATH, JSON.stringify(data, null, 2))
 }
 
-export function openPrimeAgentLogin(): void {
-  spawn('open', ['-a', 'Terminal', join(homedir(), '')], { detached: true, stdio: 'ignore' }).unref()
-  spawn('osascript', [
-    '-e',
-    'tell application "Terminal" to do script "prime-agent"'
-  ], { detached: true, stdio: 'ignore' }).unref()
+export function openPrimeAgentLogin(binary = 'prime-agent'): void {
+  if (process.platform === 'win32') {
+    const command = process.env.ComSpec ?? 'cmd.exe'
+    const target = /\.js$/i.test(binary)
+      ? `"${process.env.PRIME_DESKTOP_NODE_PATH ?? 'node.exe'}" "${binary}"`
+      : `"${binary}"`
+    spawn(command, ['/d', '/k', target], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false
+    }).unref()
+    return
+  }
+
+  if (process.platform === 'darwin') {
+    spawn('open', ['-a', 'Terminal', join(homedir(), '')], { detached: true, stdio: 'ignore' }).unref()
+    spawn('osascript', [
+      '-e',
+      `tell application "Terminal" to do script "${binary.replace(/"/g, '\\"')}"`
+    ], { detached: true, stdio: 'ignore' }).unref()
+    return
+  }
+
+  // Linux distributions expose different terminal launchers. The first one
+  // available gets a visible shell for the interactive subscription login.
+  const terminal = process.env.TERMINAL ?? 'x-terminal-emulator'
+  const command = /\.js$/i.test(binary) ? (process.env.PRIME_DESKTOP_NODE_PATH ?? 'node') : binary
+  const args = /\.js$/i.test(binary) ? [binary] : []
+  spawn(terminal, ['-e', command, ...args], { detached: true, stdio: 'ignore' }).unref()
 }
 
 export async function readPrimeSettings(): Promise<Record<string, unknown>> {

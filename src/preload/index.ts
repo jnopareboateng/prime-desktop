@@ -89,6 +89,7 @@ const api = {
   shareSession: (agentId: string) => ipcRenderer.invoke(IPC.shareSession, agentId),
   changelog: () => ipcRenderer.invoke(IPC.changelog),
   logsReveal: () => ipcRenderer.invoke(IPC.logsReveal),
+  menuPopup: (request: import('@shared/types').MenuPopupRequest) => ipcRenderer.invoke(IPC.menuPopup, request),
   windowFullscreen: (mode?: string) => ipcRenderer.invoke(IPC.windowFullscreen, mode),
   onEvent: (cb: (e: unknown) => void): (() => void) => {
     const listener = (_: unknown, payload: unknown) => cb(payload)

@@ -7,9 +7,9 @@ import Composer from '../components/Composer'
 import CloudMark from '../components/CloudMark'
 import MessageItem from '../components/MessageItem'
 import SlashOverlay from '../components/SlashOverlay'
+import type { AccessMode } from '../components/AccessPicker'
 import type { Block, FleetEntry, RenderMessage } from '../lib/store'
 import { mergeMessage as merge, extractText } from '../lib/store'
-import type { AccessMode } from '../components/AccessPicker'
 import { isInternalStateRestoreMessage } from '@shared/messageVisibility'
 
 function renderMessages(items: unknown[]): RenderMessage[] {
@@ -23,8 +23,6 @@ interface Props {
   info: AgentInfo | null
   tab: ProjectTab | null
   projects?: ProjectTab[]
-  accessMode?: AccessMode
-  onAccessModeChange?: (mode: AccessMode) => void
   onOpenSubagent?: (entry: FleetEntry) => void
   onSubagentActivity?: (entry: FleetEntry) => void
   onNavigate?: (view: ViewId) => void
@@ -32,11 +30,13 @@ interface Props {
   onSelectProject?: (projectId: string) => void
   onNewProject?: () => void
   onToast?: (text: string, kind?: 'info' | 'success' | 'warning' | 'error') => void
+  accessMode?: AccessMode
+  onAccessModeChange?: (mode: AccessMode) => void
   rlmMaxDepth?: number
   onDepthChange?: (depth: number) => void
 }
 
-export default function ChatView({ agentId, info, tab: _tab, projects = [], accessMode = 'ask', onAccessModeChange, onOpenSubagent, onSubagentActivity, onNavigate, onOpenGit, onSelectProject, onNewProject, onToast, rlmMaxDepth = 1, onDepthChange }: Props): JSX.Element {
+export default function ChatView({ agentId, info, tab: _tab, projects = [], accessMode = 'full', onAccessModeChange, onOpenSubagent, onSubagentActivity, onNavigate, onOpenGit, onSelectProject, onNewProject, onToast, rlmMaxDepth = 1, onDepthChange }: Props): JSX.Element {
   const [messages, setMessages] = useState<RenderMessage[]>([])
   const [toolExecs, setToolExecs] = useState<Record<string, unknown>>({})
   const [commands, setCommands] = useState<{ name: string; description?: string }[]>([])
@@ -564,8 +564,6 @@ export default function ChatView({ agentId, info, tab: _tab, projects = [], acce
         onSelectModel={pickModel}
         effortLevel={effortLevel}
         onSelectEffort={handleSelectEffort}
-        accessMode={accessMode}
-        onAccessModeChange={onAccessModeChange}
         rlmMaxDepth={rlmMaxDepth}
         onDepthChange={onDepthChange}
         openPicker={openPicker}
@@ -577,6 +575,8 @@ export default function ChatView({ agentId, info, tab: _tab, projects = [], acce
         onSelectProject={onSelectProject}
         onNewProject={onNewProject}
         onBranchClick={onOpenGit}
+        accessMode={accessMode}
+        onAccessModeChange={onAccessModeChange}
       />
       {overlay && (
         <SlashOverlay

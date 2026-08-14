@@ -1,12 +1,18 @@
 # Prime Desktop
 
-Prime Desktop is a macOS Electron client for [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent). It provides a focused chat workspace with streaming responses, tool activity, subagent inspection, session resume, model selection, project tabs, permissions, and review surfaces.
+Prime Desktop is a cross-platform Electron client for [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent). It provides a focused chat workspace with streaming responses, tool activity, subagent inspection, session resume, model selection, projects, and review surfaces.
 
 ## Requirements
 
-- macOS
+- macOS, Linux, or Windows
 - Node.js 20 or newer
 - A working `prime-agent` installation available on `PATH`
+
+On Windows, the app also discovers npm-global installs such as
+`C:\\nvm4w\\nodejs\\prime-agent.cmd` and the Install Prime Agent action uses
+`npm install --global prime-agent` when needed. WSL2 project folders can be
+opened through their `\\\\wsl.localhost\\<distro>\\...` path and are executed by
+the Windows Prime Agent runtime.
 
 ## Development
 
@@ -30,7 +36,21 @@ The app starts Prime Agent in RPC mode for each opened project. Session data rem
 npm run package
 ```
 
-The packaged application requires the same Prime Agent runtime and macOS permissions as the development app.
+The packaged application requires the same Prime Agent runtime and platform permissions as the development app.
+
+Sandbox status is deliberately reported honestly. The sandbox adapter is
+opt-in and fails closed until the host backend and behavioral probes pass. The
+Windows backend requires the sandbox-runtime one-time machine setup; WSL1 is
+not supported for protected mode, and the Windows app does not silently bridge
+to a Linux Prime Agent daemon inside WSL.
+
+For a Windows installer, run this on Windows after installing dependencies with `npm ci`:
+
+```bash
+npm run package:win
+```
+
+This produces `release/Prime-Desktop-Setup-<version>.exe` using the NSIS installer target.
 
 ## License
 

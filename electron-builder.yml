@@ -6,6 +6,9 @@ directories:
 files:
   - out/**
   - package.json
+asarUnpack:
+  - node_modules/@anthropic-ai/sandbox-runtime/**
+  - node_modules/prime-agent/**
 mac:
   target:
     - dmg
@@ -24,6 +27,15 @@ dmg:
       y: 220
       type: link
       path: /Applications
+# node-pty ships platform prebuilds; avoid requiring optional Spectre libraries.
 npmRebuild: false
+win:
+  target:
+    - nsis
+  artifactName: Prime-Desktop-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

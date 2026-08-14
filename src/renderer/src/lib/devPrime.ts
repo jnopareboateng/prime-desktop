@@ -69,7 +69,7 @@ export function installDevPrime(): void {
       settings: devSettings,
       binary: { status: 'found', path: '/usr/local/bin/prime-agent', version: '0.1.0', error: null }
     }),
-    agentState: async () => [{ id: agentId, name: 'prime', path: '/workspace/prime', status: 'idle', model: 'openai-codex/gpt-5.6-sol', thinkingLevel: 'high', messageCount: 2, cost: 0, tokensIn: 1200, tokensOut: 800, contextPercent: 12, contextTokens: 2000, contextWindow: 16000, isStreaming: false, sessionName: 'Prime desktop redesign', sessionId: 'dev-prime' }],
+  agentState: async () => [{ id: agentId, name: 'prime', path: '/workspace/prime', status: 'idle', enforcement: 'unenforced', model: 'openai-codex/gpt-5.6-sol', thinkingLevel: 'high', messageCount: 2, cost: 0, tokensIn: 1200, tokensOut: 800, contextPercent: 12, contextTokens: 2000, contextWindow: 16000, isStreaming: false, sessionName: 'Prime desktop redesign', sessionId: 'dev-prime' }],
     agentMessages: async () => messages,
     agentCommands: async () => [],
     agentCommand: async (_id: string, command: { type?: string }) => command.type === 'get_available_models'

@@ -12,10 +12,9 @@ interface Props {
   onCloseTab?: (tabId: string) => void
   onOpenFolder?: () => void
   collapsed?: boolean
-  onToggle?: () => void
 }
 
-export default function Sidebar({ state, activeAgentId, onView, onNewChat, onSelectTab, onCloseTab, onOpenFolder, collapsed = false, onToggle }: Props): JSX.Element {
+export default function Sidebar({ state, activeAgentId, onView, onNewChat, onSelectTab, onCloseTab, onOpenFolder, collapsed = false }: Props): JSX.Element {
   const [sessionsByAgent, setSessionsByAgent] = useState<Record<string, SessionSummary[]>>({})
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [expandedTabs, setExpandedTabs] = useState<Set<string>>(new Set())
@@ -25,6 +24,7 @@ export default function Sidebar({ state, activeAgentId, onView, onNewChat, onSel
 
   const agent = activeAgentId ? state.agents[activeAgentId] : null
   const working = agent && (agent.status === 'working' || agent.isStreaming)
+  const agentUnavailable = agent?.status === 'error' || agent?.status === 'stopped' || agent?.enforcement === 'unavailable'
 
   useEffect(() => {
     let disposed = false
@@ -80,18 +80,6 @@ export default function Sidebar({ state, activeAgentId, onView, onNewChat, onSel
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-drag" />
-      <div className="sidebar-window-controls">
-        <button className="sidebar-titlebar-btn" title="Collapse sidebar" onClick={onToggle}>
-          <CollapseIcon collapsed={false} />
-        </button>
-        <button className="sidebar-titlebar-btn" title="Back" disabled>
-          <BackIcon />
-        </button>
-        <button className="sidebar-titlebar-btn" title="Forward" disabled>
-          <ForwardIcon />
-        </button>
-      </div>
       <div className="sidebar-header">
         <div className="sidebar-header-row">
           <div className="sidebar-brand-wrap">
@@ -261,8 +249,10 @@ export default function Sidebar({ state, activeAgentId, onView, onNewChat, onSel
       <div className="sidebar-footer">
         {agent && (
           <div className="sidebar-agent-chip">
-            <span className={`status-dot ${working ? 'working' : 'idle'}`} />
-            <span className="agent-chip-text">{working ? 'Working…' : 'Ready'}</span>
+            <span className={`status-dot ${working ? 'working' : agentUnavailable ? 'error' : 'idle'}`} />
+            <span className="agent-chip-text">
+              {working ? 'Working…' : agentUnavailable ? 'Unavailable' : agent.enforcement === 'unenforced' ? 'Ready · Unsandboxed' : 'Ready'}
+            </span>
           </div>
         )}
         <button className="sidebar-user-btn" onClick={() => onView('settings')}>
@@ -306,18 +296,6 @@ function SearchIcon() {
       <path d="M21 21l-4.35-4.35" />
     </svg>
   )
-}
-
-function CollapseIcon({ collapsed }: { collapsed: boolean }) {
-  return <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="2" /><path d={collapsed ? 'M9 4v16M14 9l3 3-3 3' : 'M15 4v16M10 9l-3 3 3 3'} /></svg>
-}
-
-function BackIcon() {
-  return <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M15 18l-6-6 6-6" /></svg>
-}
-
-function ForwardIcon() {
-  return <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M9 6l6 6-6 6" /></svg>
 }
 
 function GitIcon() {

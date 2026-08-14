@@ -16,3 +16,4 @@ PLAN.md
 *.dmg
 *.zip
 coverage/
+.agent-runs/

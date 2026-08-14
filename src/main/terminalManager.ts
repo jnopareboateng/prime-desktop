@@ -16,6 +16,7 @@ export interface TerminalSnapshot {
   buffer: string
   cwd: string
   offset: number
+  enforcement: 'unenforced'
 }
 
 export class TerminalManager extends EventEmitter {
@@ -25,8 +26,8 @@ export class TerminalManager extends EventEmitter {
     const existing = this.sessions.get(agentId)
     if (existing) return this.snapshot(existing)
 
-    const shell = process.env.SHELL || '/bin/zsh'
-    const pty = spawn(shell, ['-l'], {
+    const { shell, args } = shellCommand()
+    const pty = spawn(shell, args, {
       name: 'xterm-256color',
       cols: clamp(cols, 20, 500),
       rows: clamp(rows, 5, 200),
@@ -92,8 +93,19 @@ export class TerminalManager extends EventEmitter {
       pid: session.process.pid,
       buffer: session.buffer,
       cwd: session.cwd,
-      offset: session.offset
+      offset: session.offset,
+      enforcement: 'unenforced'
     }
+  }
+}
+
+function shellCommand(): { shell: string; args: string[] } {
+  if (process.platform === 'win32') {
+    return { shell: process.env.ComSpec || 'cmd.exe', args: [] }
+  }
+  return {
+    shell: process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh'),
+    args: ['-l']
   }
 }
 

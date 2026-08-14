@@ -1,0 +1,40 @@
+name: Sandbox substrate
+
+on:
+  push:
+    paths:
+      - 'src/main/sandbox/**'
+      - 'scripts/sandbox/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/sandbox-probes.yml'
+  pull_request:
+    paths:
+      - 'src/main/sandbox/**'
+      - 'scripts/sandbox/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/sandbox-probes.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  substrate:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run sandbox:selfcheck
+      - run: npm run sandbox:probes
