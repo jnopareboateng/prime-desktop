@@ -1,5 +1,6 @@
 import { PROBE_CATALOG } from './catalog.mts'
 import { currentPlatform, runProbes } from './runner.mts'
+import { registerNativeBackends } from './native-backends.mts'
 import type { ProbeResult, ProbeStatus } from './types.mts'
 
 // Runnable probe entry point. A missing backend is an explicit release gate:
@@ -17,6 +18,7 @@ async function main() {
   console.log(`sandbox probes — host platform: ${platform}`)
   console.log('-'.repeat(72))
 
+  await registerNativeBackends()
   const results = await runProbes(PROBE_CATALOG)
   for (const result of results) {
     const marker = result.status === 'pass' ? 'PASS' : result.status === 'fail' ? 'FAIL' : 'SKIP'
@@ -28,8 +30,8 @@ async function main() {
   console.log(`pass=${counts.pass} fail=${counts.fail} unavailable=${counts.unavailable} total=${results.length}`)
 
   if (counts.fail > 0) process.exitCode = 1
-  else if (counts.pass === 0 && counts.unavailable > 0 && process.env.PRIME_DESKTOP_ALLOW_UNAVAILABLE_PROBES !== '1') {
-    console.error('No sandbox probe passed. Set PRIME_DESKTOP_ALLOW_UNAVAILABLE_PROBES=1 only for an explicitly unsupported local host.')
+  else if (counts.unavailable > 0 && process.env.PRIME_DESKTOP_ALLOW_UNAVAILABLE_PROBES !== '1') {
+    console.error('Sandbox probe coverage is incomplete. Set PRIME_DESKTOP_ALLOW_UNAVAILABLE_PROBES=1 only for an explicitly unsupported local host.')
     process.exitCode = 2
   } else process.exitCode = 0
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { clearBackends, currentPlatform, registerBackend, runProbe } from './runner.mts'
 import type { ProbeCase } from './types.mts'
+import { detectHostPlatform, resolveBackendCapability } from '../../src/main/sandbox/host.ts'
 
 const fixture: ProbeCase = {
   id: 'selfcheck.fixture',
@@ -34,6 +35,9 @@ async function main() {
   const otherPlatform = currentPlatform() === 'darwin' ? 'linux' : 'darwin'
   const wrongPlatform = await runProbe({ ...fixture, platforms: [otherPlatform] })
   assert.equal(wrongPlatform.status, 'unavailable', 'a case scoped to another platform must report unavailable')
+
+  assert.equal(detectHostPlatform('linux', '4.19.0-microsoft-standard', 'Linux version'), 'wsl1')
+  assert.equal(resolveBackendCapability('wsl1', () => ({ platform: 'wsl1', state: 'enforced', backend: 'test', reason: 'should be rejected' })).state, 'unavailable')
 
   clearBackends()
   console.log('scripts/sandbox selfcheck: all assertions passed')
