@@ -10,7 +10,7 @@ function integrityFiles(directory, relative = '') {
     const entryRelative = join(relative, entry.name)
     const absolute = join(directory, entry.name)
     if (entry.isDirectory()) return integrityFiles(absolute, entryRelative)
-    return /\.(?:cjs|mjs|js)$/.test(entry.name) ? [entryRelative.replaceAll('\\\\', '/')] : []
+    return /\.(?:cjs|mjs|js)$/.test(entry.name) ? [entryRelative.replaceAll('\\', '/')] : []
   })
 }
 
