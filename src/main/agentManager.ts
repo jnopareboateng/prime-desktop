@@ -751,6 +751,7 @@ export class AgentManager extends EventEmitter {
   }
 
   async observeFleet(agentId: string, activeSessionId: string): Promise<{ status: string; observed: FleetAgent }> {
+    await this.requireFullAccess('Fleet observation')
     const binary = this.binary.getBinary()
     const observer = new RpcClient({ binary, cwd: homedir(), args: ['--no-session'] })
     this.observers.set(activeSessionId, observer)
@@ -1197,8 +1198,9 @@ export class AgentManager extends EventEmitter {
     }
   }
 
-  shutdownAll(): void {
-    for (const a of this.agents.values()) a.client?.kill()
+  async shutdownAll(): Promise<void> {
+    const clients = [...this.agents.values()].map((agent) => agent.client?.shutdown()).filter(Boolean) as Promise<void>[]
+    await Promise.allSettled(clients)
     for (const o of this.observers.values()) o.kill()
     this.agents.clear()
     this.observers.clear()

@@ -1,8 +1,9 @@
-import { readFile, writeFile, mkdir } from 'fs/promises'
+import { readFile, writeFile, mkdir, rename, rm, chmod } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import { app } from 'electron'
 import { existsSync } from 'fs'
+import { randomUUID } from 'crypto'
 import type { AppSettings, ProjectTab } from '@shared/types'
 import { CODEX_DARK_THEME, PRIME_LIGHT_THEME } from '@shared/themes'
 
@@ -62,11 +63,18 @@ async function load(): Promise<StoredState> {
   return cache
 }
 
-async function save(): Promise<void> {
-  if (!cache) return
+async function save(next: StoredState): Promise<void> {
   const file = stateFile()
   await mkdir(join(file, '..'), { recursive: true })
-  await writeFile(file, JSON.stringify(cache, null, 2))
+  const temporary = `${file}.tmp-${randomUUID()}`
+  try {
+    await writeFile(temporary, JSON.stringify(next, null, 2), { mode: 0o600 })
+    await chmod(temporary, 0o600).catch(() => {})
+    await rename(temporary, file)
+    cache = next
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {})
+  }
 }
 
 export async function getState(): Promise<StoredState> {
@@ -75,20 +83,17 @@ export async function getState(): Promise<StoredState> {
 
 export async function setSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const s = await load()
-  s.settings = { ...s.settings, ...patch }
-  await save()
-  return s.settings
+  const next = { ...s, settings: { ...s.settings, ...patch } }
+  await save(next)
+  return next.settings
 }
 
 export async function setTabs(tabs: ProjectTab[], activeTabId: string | null): Promise<void> {
   const s = await load()
-  s.tabs = tabs
-  s.activeTabId = activeTabId
-  await save()
+  await save({ ...s, tabs, activeTabId })
 }
 
 export async function setModel(model: string | null): Promise<void> {
   const s = await load()
-  s.model = model
-  await save()
+  await save({ ...s, model })
 }

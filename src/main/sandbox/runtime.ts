@@ -17,6 +17,7 @@ import { detectHostPlatform, resolveBackendCapability, unavailableCapability } f
 import type { BackendCapability, EnforcementState, ExecutionPolicy } from './types'
 import type { AccessMode, PermissionRule } from '@shared/types'
 import { rulesForProject } from '../permissions'
+import { filterEnvironmentForPolicy, SAFE_ENV_NAMES } from './environment'
 
 const require = createRequire(import.meta.url)
 const execFileAsync = promisify(execFile)
@@ -31,26 +32,6 @@ const SANDBOX_SETTINGS_DIR = join(
   'PrimeDesktop',
   'sandbox'
 )
-
-const SAFE_ENV_NAMES = [
-  'HOME',
-  'USERPROFILE',
-  'PATH',
-  'SHELL',
-  'ComSpec',
-  'SystemRoot',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'LANG',
-  'LC_ALL',
-  'TERM',
-  'COLORTERM',
-  'XDG_CONFIG_HOME',
-  'XDG_DATA_HOME',
-  'XDG_CACHE_HOME',
-  'PRIME_AGENT_KERNEL_PYTHON'
-]
 
 let capabilityPromise: Promise<BackendCapability> | null = null
 
@@ -99,11 +80,7 @@ function nodeForScript(script: string): string {
 }
 
 function filteredEnv(policy: ExecutionPolicy): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {}
-  for (const name of policy.envAllowlist) {
-    const value = process.env[name]
-    if (value !== undefined) env[name] = value
-  }
+  const env = filterEnvironmentForPolicy(policy)
   env.ELECTRON_RUN_AS_NODE = '1'
   delete env.ELECTRON_NO_ASAR
   return env
@@ -219,12 +196,20 @@ function sandboxConfig(policy: ExecutionPolicy): Record<string, unknown> {
 
 async function dependencyCapability(): Promise<BackendCapability> {
   if (capabilityPromise) return capabilityPromise
-  capabilityPromise = resolveDependencyCapability()
-  return capabilityPromise
+  const pending = resolveDependencyCapability()
+  capabilityPromise = pending
+  try {
+    return await pending
+  } finally {
+    // A failed Windows install or a dependency becoming available must be
+    // observable without restarting the desktop process.
+    if (capabilityPromise === pending) capabilityPromise = null
+  }
 }
 
 async function resolveDependencyCapability(): Promise<BackendCapability> {
   const platform = detectHostPlatform()
+  if (platform === 'wsl1') return unavailableCapability(platform, 'WSL1 is unsupported for protected execution.')
   try {
     const check = process.platform === 'win32'
       ? await checkWindowsDependenciesAsync({ srtWin: resolveSrtWin({ path: runtimeSrtWinPath() }) })
@@ -283,7 +268,9 @@ async function runBehavioralProbe(): Promise<{ ok: boolean; reason: string }> {
     'try { fs.readFileSync(outsideFile); failed = true } catch {}',
     "try { fs.writeFileSync(insideFile, 'updated'); } catch { failed = true }",
     "try { fs.writeFileSync(outsideFile, 'blocked'); failed = true } catch {}",
-    'process.exit(failed ? 1 : 0)'
+    `const child = require('child_process').spawnSync(process.execPath, ['-e', ${JSON.stringify("require('fs').writeFileSync(process.argv[1], 'child-escape')")}, outsideFile], { stdio: 'ignore' });`,
+    "if (child.status === 0 && fs.existsSync(outsideFile)) failed = true",
+    "require('dns').promises.resolve('example.com').then(() => { failed = true }).catch(() => {}).finally(() => process.exit(failed ? 1 : 0))"
   ].join(';')
   try {
     await mkdir(inside, { recursive: true })

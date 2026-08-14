@@ -45,6 +45,7 @@ export function resolveBackendCapability(
   platform: HostPlatform = detectHostPlatform(),
   probe?: BackendProbe
 ): BackendCapability {
+  if (platform === 'wsl1') return unavailableCapability(platform, 'WSL1 is unsupported for protected execution.')
   if (!probe) return unavailableCapability(platform)
   const result = probe(platform)
   if (result.state === 'enforced' && !result.backend) {

@@ -180,10 +180,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  manager?.shutdownAll()
-})
-
-app.on('will-quit', () => {
-  manager?.shutdownAll()
+let quitting = false
+app.on('before-quit', (event) => {
+  if (quitting) return
+  event.preventDefault()
+  quitting = true
+  void manager?.shutdownAll().finally(() => app.quit())
 })

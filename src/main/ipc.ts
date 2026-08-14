@@ -21,7 +21,12 @@ import {
 
 export function registerIpc(win: () => BrowserWindow | null, manager: AgentManager, binary: BinaryManager): void {
   const terminals = new TerminalManager()
-  let settingsTransition: Promise<void> = Promise.resolve()
+  let policyTransition: Promise<void> = Promise.resolve()
+  const enqueuePolicy = <T>(operation: () => Promise<T>): Promise<T> => {
+    const next = policyTransition.then(operation)
+    policyTransition = next.then(() => undefined, () => undefined)
+    return next
+  }
   const send = (channel: string, payload: unknown) => {
     const w = win()
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload)
@@ -216,36 +221,48 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
   ipcMain.handle(IPC.gitCommit, (_e, agentId: string, message: string) => manager.gitCommit(agentId, message))
 
   ipcMain.handle(IPC.permissionsList, () => listRules())
-  ipcMain.handle(IPC.permissionsSet, async (_e, pattern: string, action: 'allow' | 'deny', scope: 'global' | 'project', projectPath?: string) => {
-    const before = await listRules()
-    const rules = await addRule({ pattern, action, scope, projectPath })
-    const settings = (await getState()).settings
-    if (settings.accessMode === 'custom') {
-      try {
-        await manager.applyAccessMode(settings, settings)
-      } catch (error) {
-        await replaceRules([...before].reverse())
-        await manager.applyAccessMode(settings, settings).catch(() => {})
-        throw error
+  ipcMain.handle(IPC.permissionsSet, (_e, pattern: string, action: 'allow' | 'deny', scope: 'global' | 'project', projectPath?: string) =>
+    enqueuePolicy(async () => {
+      const before = await listRules()
+      const rules = await addRule({ pattern, action, scope, projectPath })
+      const settings = (await getState()).settings
+      if (settings.accessMode === 'custom') {
+        try {
+          await manager.applyAccessMode(settings, settings)
+        } catch (error) {
+          try {
+            await replaceRules([...before].reverse())
+            await manager.applyAccessMode(settings, settings)
+          } catch (rollbackError) {
+            throw new Error(`Permission update failed and rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
+          }
+          throw error
+        }
       }
-    }
-    return rules
-  })
-  ipcMain.handle(IPC.permissionsRemove, async (_e, index: number) => {
-    const before = await listRules()
-    const rules = await removeRule(index)
-    const settings = (await getState()).settings
-    if (settings.accessMode === 'custom') {
-      try {
-        await manager.applyAccessMode(settings, settings)
-      } catch (error) {
-        await replaceRules([...before].reverse())
-        await manager.applyAccessMode(settings, settings).catch(() => {})
-        throw error
+      return rules
+    })
+  )
+  ipcMain.handle(IPC.permissionsRemove, (_e, index: number) =>
+    enqueuePolicy(async () => {
+      const before = await listRules()
+      const rules = await removeRule(index)
+      const settings = (await getState()).settings
+      if (settings.accessMode === 'custom') {
+        try {
+          await manager.applyAccessMode(settings, settings)
+        } catch (error) {
+          try {
+            await replaceRules([...before].reverse())
+            await manager.applyAccessMode(settings, settings)
+          } catch (rollbackError) {
+            throw new Error(`Permission removal failed and rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
+          }
+          throw error
+        }
       }
-    }
-    return rules
-  })
+      return rules
+    })
+  )
 
   ipcMain.handle(IPC.dashboardSpend, () => manager.spend())
   ipcMain.handle(IPC.dashboardModels, async () => {
@@ -276,14 +293,15 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
 
   ipcMain.handle(IPC.settingsGet, async () => (await getState()).settings)
   ipcMain.handle(IPC.settingsSet, async (_e, patch: unknown) => {
-    const transition = settingsTransition.then(async () => {
+    return enqueuePolicy(async () => {
       const s = await getState()
       if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) throw new Error('Settings patch must be an object')
       const p = patch as Record<string, unknown>
       if (p.accessMode !== undefined && !['ask', 'approve-me', 'full', 'custom'].includes(String(p.accessMode))) {
         throw new Error('Unknown access mode')
       }
-      if (p.accessMode !== undefined && p.accessMode !== s.settings.accessMode) {
+      const accessModeChanged = p.accessMode !== undefined && p.accessMode !== s.settings.accessMode
+      if (accessModeChanged) {
         const mode = String(p.accessMode) as AccessMode
         const bootstrap = await provisionWindowsSandbox(mode)
         if (process.platform === 'win32' && mode !== 'full' && !bootstrap.ready) {
@@ -292,7 +310,19 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
         const candidate = { ...s.settings, ...(patch as Partial<AppSettings>) }
         await manager.applyAccessMode(candidate, s.settings)
       }
-      const settings = await setSettings(patch as Partial<AppSettings>)
+      let settings: AppSettings
+      try {
+        settings = await setSettings(patch as Partial<AppSettings>)
+      } catch (error) {
+        if (accessModeChanged) {
+          try {
+            await manager.applyAccessMode(s.settings, s.settings)
+          } catch (rollbackError) {
+            throw new Error(`Settings persistence failed and runtime rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
+          }
+        }
+        throw error
+      }
       for (const a of manager.allAgentInfos()) {
         const agentId = a.id
         if (p.autoCompaction !== undefined) {
@@ -310,8 +340,6 @@ export function registerIpc(win: () => BrowserWindow | null, manager: AgentManag
       }
       return settings
     })
-    settingsTransition = transition.then(() => undefined, () => undefined)
-    return transition
   })
 
   ipcMain.handle(IPC.revealInFinder, (_e, path: string) => shell.showItemInFolder(path))

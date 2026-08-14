@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
 import { spawn, type ChildProcess } from 'child_process'
 import { createHash } from 'crypto'
-import { existsSync, readFileSync, realpathSync } from 'fs'
+import { existsSync, readFileSync, realpathSync, readdirSync } from 'fs'
 import { rm } from 'fs/promises'
 import { dirname, join, sep } from 'path'
 import { pathToFileURL } from 'url'
@@ -115,12 +115,23 @@ function verifiedModulePath(root: string, relativePath: string): string {
   return modulePath
 }
 
+function integrityFiles(root: string, relative = 'dist'): string[] {
+  const directory = join(root, relative)
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const child = join(relative, entry.name)
+    if (entry.isDirectory()) return integrityFiles(root, child)
+    return /\.(?:cjs|mjs|js)$/.test(entry.name) ? [child.replaceAll(sep, '/')] : []
+  })
+}
+
 function verifyModuleIntegrity(root: string, protectedMode: boolean): string[] {
   const paths = DAEMON_MODULES.map((relativePath) => verifiedModulePath(root, relativePath))
-  const manifestPath = process.env.PRIME_AGENT_MODULE_MANIFEST || join(root, 'prime-desktop-integrity.json')
+  const manifestPath = protectedMode
+    ? join(root, 'prime-desktop-integrity.json')
+    : process.env.PRIME_AGENT_MODULE_MANIFEST || join(root, 'prime-desktop-integrity.json')
   if (!existsSync(manifestPath)) {
     if (protectedMode) {
-      throw new Error('Protected Prime Agent sessions require PRIME_AGENT_MODULE_MANIFEST.')
+      throw new Error('Protected Prime Agent sessions require the packaged integrity manifest.')
     }
     console.warn('[prime-desktop] Prime Agent module integrity manifest is not configured; dynamic modules remain unverified.')
     return paths
@@ -139,15 +150,18 @@ function verifyModuleIntegrity(root: string, protectedMode: boolean): string[] {
     throw new Error('Prime Agent module integrity manifest must be an object of relative paths to SHA-256 hashes.')
   }
 
-  for (const [index, relativePath] of DAEMON_MODULES.entries()) {
+  const actualFiles = integrityFiles(root).sort()
+  const manifestFiles = Object.keys(entries as Record<string, unknown>).sort()
+  if (manifestFiles.join('\n') !== actualFiles.join('\n')) {
+    throw new Error('Prime Agent module integrity manifest does not match the installed module graph.')
+  }
+  for (const relativePath of actualFiles) {
     const expected = (entries as Record<string, unknown>)[relativePath]
     if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/i.test(expected)) {
       throw new Error(`Prime Agent module integrity is missing a SHA-256 entry for ${relativePath}.`)
     }
-    const actual = createHash('sha256').update(readFileSync(paths[index])).digest('hex')
-    if (actual !== expected.toLowerCase()) {
-      throw new Error(`Prime Agent module integrity check failed for ${relativePath}.`)
-    }
+    const actual = createHash('sha256').update(readFileSync(verifiedModulePath(root, relativePath))).digest('hex')
+    if (actual !== expected.toLowerCase()) throw new Error(`Prime Agent module integrity check failed for ${relativePath}.`)
   }
   return paths
 }
@@ -253,6 +267,17 @@ async function connectWithStartup(
       lastError = error
       client.close()
     }
+  }
+  if (daemon.exitCode === null) {
+    daemon.kill()
+    await new Promise<void>((resolve) => {
+      if (daemon.exitCode !== null) return resolve()
+      const timer = setTimeout(resolve, 5_000)
+      daemon.once('exit', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
   }
   await cleanup()
   throw lastError instanceof Error ? lastError : new Error('Prime Agent daemon did not start.')
