@@ -1,4 +1,5 @@
 import type { ViewId } from './types'
+import { PRODUCT_NAME } from './product'
 
 export interface SlashCommandDef {
   name: string
@@ -44,7 +45,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'heartbeats', description: 'View all heartbeats and schedules' },
   { name: 'reload', description: 'Reload commands, skills, and prompts' },
   { name: 'fullscreen', description: 'Toggle fullscreen', argumentHint: '[on|off]', takesArgument: true },
-  { name: 'quit', description: 'Quit Prime Desktop' },
+  { name: 'quit', description: `Quit ${PRODUCT_NAME}` },
   { name: 'resume', description: 'Resume a previous session' }
 ]
 

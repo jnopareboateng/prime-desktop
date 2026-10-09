@@ -4,6 +4,7 @@ import { BinaryManager } from './binary'
 import { AgentManager } from './agentManager'
 import { registerIpc } from './ipc'
 import { getState } from './store'
+import { PRODUCT_NAME } from '../shared/product'
 import type { AppSettings } from '@shared/types'
 import { resolveThemeMode } from '@shared/themes'
 import { provisionWindowsSandbox } from './sandbox/provision'
@@ -20,7 +21,7 @@ function createWindow(settings: AppSettings): void {
     height: 860,
     minWidth: 980,
     minHeight: 640,
-    title: 'Prime',
+    title: PRODUCT_NAME,
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset' as const,

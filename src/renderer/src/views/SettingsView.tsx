@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppSettings, ThemeConfig, ThemeMode } from '@shared/types'
 import { CODEX_DARK_THEME, PRIME_LIGHT_THEME, resolveThemeMode } from '@shared/themes'
+import { PRODUCT_NAME } from '@shared/product'
 import DepthSlider from '../components/DepthSlider'
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
@@ -239,7 +240,7 @@ export default function SettingsView({ settings, onChange }: Props): JSX.Element
       <section className="panel">
         <div className="panel-head">About</div>
         <div className="setting-desc">
-          Prime Desktop 0.1.0 — open-source Electron shell for prime-agent (MIT). Built on the{' '}
+          {PRODUCT_NAME} 0.1.0 — open-source Electron shell for prime-agent (MIT). Built on the{' '}
           <code>--mode rpc</code> protocol. Workers run with your user permissions — they are not a security sandbox.
         </div>
       </section>
