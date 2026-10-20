@@ -17,3 +17,10 @@ PLAN.md
 *.zip
 coverage/
 .agent-runs/
+
+# Tauri host and Rust build output
+src-tauri/target/
+src-tauri/gen/
+src-tauri/frontend-dist/
+src-tauri/binaries/
+sandbox/target/
